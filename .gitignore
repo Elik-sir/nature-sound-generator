@@ -1,0 +1,33 @@
+# --- Datasets & generated data (large; not versioned) ---
+ESC-50-master/
+data/raw/
+data/processed/
+
+# --- Audio (any path in the repo) ---
+*.wav
+*.flac
+*.mp3
+*.ogg
+*.aac
+*.wma
+*.m4a
+
+# --- Python / uv ---
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

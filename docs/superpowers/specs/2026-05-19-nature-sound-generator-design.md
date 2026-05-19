@@ -28,17 +28,18 @@ Architecture follows **CCDS Lite**: logic in `src/*.py`, Jupyter notebooks for e
 | Language | English (code, comments, README, notebooks) |
 | Package manager | **uv** (`pyproject.toml` + `uv.lock`; `uv sync` / `uv run`) |
 | Implementation | Stages 1→5 per `SPEC.md`; stop after each stage until user approves |
+| Version control | **No audio in git:** entire `ESC-50-master/`, `data/raw/`, `data/processed/`, and `*.wav` etc.; README has download link + layout |
 
 ## 3. Repository Layout
 
 ```text
 nature-sound-generator/
-├── ESC-50-master/              # User-provided dataset (audio gitignored)
+├── ESC-50-master/              # NOT in git — user downloads (see README)
 │   ├── audio/*.wav
 │   └── meta/esc50.csv
 ├── data/
-│   ├── raw/                    # README or symlink note → ESC-50-master
-│   └── processed/              # Per-clip .pt + manifest.json (gitignored)
+│   ├── raw/                    # Optional local raw copies (gitignored)
+│   └── processed/              # Generated .pt + manifest (gitignored)
 ├── src/
 │   ├── __init__.py
 │   ├── config.py               # Paths, hyperparameters, constants
@@ -212,11 +213,29 @@ Notebooks import from `src` only; no business logic duplicated.
 - Corrupt wav: warning + skip; abort batch if success rate < 90%
 - All paths via `pathlib.Path`
 
-## 12. Git Ignore
+## 12. Version Control & README
 
-- `data/processed/`
-- `ESC-50-master/audio/`
-- `.venv/`, `__pycache__/`, `.ipynb_checkpoints/`
+### 12.1 `.gitignore` (root)
+
+Heavy and derived data must never be committed:
+
+| Pattern | Reason |
+|---------|--------|
+| `ESC-50-master/` | Full ESC-50 tree (~600 MB+ with audio) |
+| `data/raw/` | Any local raw audio copies |
+| `data/processed/` | Generated mel tensors |
+| `*.wav`, `*.flac`, `*.mp3`, … | Audio anywhere in the repo |
+| `.venv/`, `__pycache__/`, `.ipynb_checkpoints/` | Tooling artifacts |
+
+### 12.2 README dataset section
+
+The README documents:
+
+- Link to official ESC-50: https://github.com/karolpiczak/ESC-50
+- Exact target path: `ESC-50-master/audio/` + `ESC-50-master/meta/esc50.csv`
+- Command to build processed data after `uv sync`
+
+No auto-download in code; missing `ESC-50-master/audio/` fails with a pointer to README.
 
 ## 13. Smoke Tests (optional)
 
@@ -228,7 +247,7 @@ Notebooks import from `src` only; no business logic duplicated.
 
 | Phase | Deliverable | Gate |
 |-------|-------------|------|
-| 1 | `config.py`, `make_dataset.py`, `dataloaders.py`, `pyproject.toml`, README setup | User approval |
+| 1 | `config.py`, `make_dataset.py`, `dataloaders.py`, `pyproject.toml`, `.gitignore`, README (dataset link + paths) | User approval |
 | 2 | `cnn.py`, `lstm.py`, `vae.py` | User approval |
 | 3 | `trainer.py` | User approval |
 | 4 | `visualize.py` | User approval |

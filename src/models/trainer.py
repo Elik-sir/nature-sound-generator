@@ -25,8 +25,14 @@ class ModelTrainer:
         self.model_name = model_name
         print(f"Training on: {config.describe_device(self.device)}")
         self.model = model.to(self.device)
+        self._lr = lr
+        self._weight_decay = weight_decay
+        self._reset_optimizer()
+
+    def _reset_optimizer(self) -> None:
+        params = [p for p in self.model.parameters() if p.requires_grad]
         self.optimizer = torch.optim.Adam(
-            self.model.parameters(), lr=lr, weight_decay=weight_decay
+            params, lr=self._lr, weight_decay=self._weight_decay
         )
 
     @staticmethod
@@ -102,6 +108,8 @@ class ModelTrainer:
         early_stopping_patience: int = config.EARLY_STOPPING_PATIENCE,
         label_smoothing: float = config.LABEL_SMOOTHING,
         mixup_alpha: float = config.MIXUP_ALPHA,
+        overfit_acc_gap: float = config.OVERFIT_ACC_GAP,
+        overfit_gap_patience: int = config.OVERFIT_GAP_PATIENCE,
     ) -> dict[str, list[float]]:
         criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -115,11 +123,14 @@ class ModelTrainer:
             "train_acc": [],
             "val_loss": [],
             "val_acc": [],
+            "acc_gap": [],
         }
         best_val_loss = float("inf")
         best_state: dict | None = None
-        patience_counter = 0
+        val_loss_patience = 0
+        gap_patience = 0
         stopped_early = False
+        stop_reason = ""
 
         for epoch in range(1, epochs + 1):
             train_loss, train_acc = self._run_epoch(
@@ -128,22 +139,25 @@ class ModelTrainer:
             val_loss, val_acc = self._run_epoch(val_loader, criterion, train=False)
             scheduler.step(val_loss)
             current_lr = self.optimizer.param_groups[0]["lr"]
+            acc_gap = train_acc - val_acc
 
             history["train_loss"].append(train_loss)
             history["train_acc"].append(train_acc)
             history["val_loss"].append(val_loss)
             history["val_acc"].append(val_acc)
+            history["acc_gap"].append(acc_gap)
 
             print(
                 f"Epoch {epoch}/{epochs} lr={current_lr:.2e} "
                 f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-                f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
+                f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} "
+                f"gap={acc_gap:.4f}"
             )
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_state = copy.deepcopy(self.model.state_dict())
-                patience_counter = 0
+                val_loss_patience = 0
                 if save_checkpoints:
                     checkpoints.save_best(
                         self.model_name,
@@ -155,32 +169,50 @@ class ModelTrainer:
                             "train_acc": train_acc,
                             "val_loss": val_loss,
                             "val_acc": val_acc,
+                            "acc_gap": acc_gap,
                         },
                         history=history,
                         extra={
                             "epochs_planned": epochs,
-                            "lr": config.LEARNING_RATE,
-                            "weight_decay": config.WEIGHT_DECAY,
-                            "label_smoothing": label_smoothing,
+                            "cnn_arch": config.CNN_ARCH,
+                            "lr": self._lr,
+                            "weight_decay": self._weight_decay,
                         },
                     )
             else:
-                patience_counter += 1
+                val_loss_patience += 1
 
-            if patience_counter >= early_stopping_patience:
-                print(
-                    f"Early stopping: no val_loss improvement for "
-                    f"{early_stopping_patience} epochs (best val_loss={best_val_loss:.4f})"
-                )
+            if acc_gap > overfit_acc_gap:
+                gap_patience += 1
+            else:
+                gap_patience = 0
+
+            if gap_patience >= overfit_gap_patience:
                 stopped_early = True
+                stop_reason = (
+                    f"overfitting (acc gap > {overfit_acc_gap:.2f} for "
+                    f"{overfit_gap_patience} epochs)"
+                )
+                print(f"Early stopping: {stop_reason}")
+                break
+
+            if val_loss_patience >= early_stopping_patience:
+                stopped_early = True
+                stop_reason = (
+                    f"no val_loss improvement for {early_stopping_patience} epochs"
+                )
+                print(f"Early stopping: {stop_reason} (best val_loss={best_val_loss:.4f})")
                 break
 
         if best_state is not None:
             self.model.load_state_dict(best_state)
-            print(f"Restored weights with best val_loss={best_val_loss:.4f}")
+            print(
+                f"Restored best weights (val_loss={best_val_loss:.4f}). "
+                "Use these for test evaluation, not the last epoch."
+            )
 
         if stopped_early:
-            history.setdefault("notes", []).append("early_stopping")
+            history.setdefault("notes", []).append(stop_reason)
         return history
 
     def predict_classifier(self, loader: DataLoader) -> tuple[list[int], list[int]]:

@@ -25,27 +25,39 @@ N_FFT = 2048
 HOP_LENGTH = 512
 RANDOM_SEED = 42
 
-BATCH_SIZE_CNN = 64
+BATCH_SIZE_CNN = 32
 BATCH_SIZE_LSTM = 8
-EPOCHS_CNN = 100
+EPOCHS_CNN = 80
 EPOCHS_LSTM = 30
 EPOCHS_VAE = 50
-LEARNING_RATE = 3e-4
-WEIGHT_DECAY = 1e-4
-CNN_DROPOUT = 0.3
-LABEL_SMOOTHING = 0.05
-EARLY_STOPPING_PATIENCE = 12
-MIXUP_ALPHA = 0.2
-LR_SCHEDULER_PATIENCE = 4
+
+# CNN: "light" (~300k params) generalizes better on ESC-50; "resnet18" overfits easily
+CNN_ARCH = "light"
+CNN_PRETRAINED = False
+
+LEARNING_RATE = 1e-3
+WEIGHT_DECAY = 5e-4
+CNN_DROPOUT = 0.5
+LABEL_SMOOTHING = 0.1
+EARLY_STOPPING_PATIENCE = 8
+MIXUP_ALPHA = 0.3
+
+# Stop when train_acc - val_acc stays above this gap (clear overfitting)
+OVERFIT_ACC_GAP = 0.12
+OVERFIT_GAP_PATIENCE = 4
+
+LR_SCHEDULER_PATIENCE = 3
 LR_SCHEDULER_FACTOR = 0.5
 
-# Mel augmentation (train only)
-AUG_FREQ_MASK_PROB = 0.5
-AUG_TIME_MASK_PROB = 0.5
-AUG_FREQ_MASK_MAX = 16
-AUG_TIME_MASK_MAX = 16
-AUG_NOISE_PROB = 0.3
-AUG_NOISE_STD = 0.05
+# Mel augmentation (train only) — stronger to narrow train/val gap
+AUG_FREQ_MASK_PROB = 0.9
+AUG_TIME_MASK_PROB = 0.9
+AUG_FREQ_MASK_MAX = 24
+AUG_TIME_MASK_MAX = 24
+AUG_NOISE_PROB = 0.4
+AUG_NOISE_STD = 0.08
+AUG_GAIN_MIN = 0.85
+AUG_GAIN_MAX = 1.15
 
 
 def get_device(*, require_cuda: bool = False) -> torch.device:

@@ -11,7 +11,11 @@ def plot_training_history(
     history: dict[str, list[float]],
     save_path: Path | None = None,
 ) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    has_gap = bool(history.get("acc_gap"))
+    ncols = 3 if has_gap else 2
+    fig, axes = plt.subplots(1, ncols, figsize=(4 * ncols, 4))
+    if ncols == 2:
+        axes = list(axes)
 
     epochs = range(1, len(history["train_loss"]) + 1)
     axes[0].plot(epochs, history["train_loss"], label="train")
@@ -25,6 +29,12 @@ def plot_training_history(
     axes[1].set_title("Accuracy")
     axes[1].set_xlabel("Epoch")
     axes[1].legend()
+
+    if has_gap:
+        axes[2].plot(epochs, history["acc_gap"], color="crimson")
+        axes[2].axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        axes[2].set_title("Overfit gap (train - val acc)")
+        axes[2].set_xlabel("Epoch")
 
     fig.tight_layout()
     if save_path:

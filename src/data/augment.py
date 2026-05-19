@@ -36,4 +36,6 @@ def augment_mel(spec: torch.Tensor) -> torch.Tensor:
         spec = _time_mask(spec, config.AUG_TIME_MASK_MAX)
     if random.random() < config.AUG_NOISE_PROB:
         spec = spec + config.AUG_NOISE_STD * torch.randn_like(spec)
+    gain = random.uniform(config.AUG_GAIN_MIN, config.AUG_GAIN_MAX)
+    spec = spec * gain
     return spec

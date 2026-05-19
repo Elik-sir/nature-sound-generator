@@ -1,40 +1,30 @@
 from __future__ import annotations
 
 import torch.nn as nn
+from torchvision import models
 
 from src import config
 
 
 class CNNClassifier(nn.Module):
+    """ResNet-18 backbone for 128×128 mel spectrograms (1 channel)."""
+
     def __init__(
         self,
         num_classes: int = config.NUM_CLASSES,
         dropout: float = config.CNN_DROPOUT,
     ):
         super().__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(1, 32, 3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Dropout2d(0.1),
-            nn.Conv2d(32, 64, 3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Dropout2d(0.2),
-            nn.Conv2d(64, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
+        backbone = models.resnet18(weights=None)
+        backbone.conv1 = nn.Conv2d(
+            1, 64, kernel_size=7, stride=2, padding=3, bias=False
         )
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(128 * 16 * 16, 256),
-            nn.ReLU(),
+        in_features = backbone.fc.in_features
+        backbone.fc = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(256, num_classes),
+            nn.Linear(in_features, num_classes),
         )
+        self.backbone = backbone
 
     def forward(self, x):
-        return self.classifier(self.features(x))
+        return self.backbone(x)

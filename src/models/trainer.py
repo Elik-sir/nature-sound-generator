@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -28,11 +29,24 @@ class ModelTrainer:
             self.model.parameters(), lr=lr, weight_decay=weight_decay
         )
 
+    @staticmethod
+    def _mixup_batch(
+        features: torch.Tensor,
+        labels: torch.Tensor,
+        alpha: float,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
+        lam = float(np.random.beta(alpha, alpha))
+        index = torch.randperm(features.size(0), device=features.device)
+        mixed = lam * features + (1.0 - lam) * features[index]
+        return mixed, labels, labels[index], lam
+
     def _run_epoch(
         self,
         loader: DataLoader,
         criterion: nn.Module,
         train: bool,
+        *,
+        mixup_alpha: float = 0.0,
     ) -> tuple[float, float]:
         self.model.train(train)
         total_loss = 0.0
@@ -43,18 +57,37 @@ class ModelTrainer:
             features = features.to(self.device)
             labels = labels.to(self.device)
 
+            if train and mixup_alpha > 0:
+                features, labels_a, labels_b, lam = self._mixup_batch(
+                    features, labels, mixup_alpha
+                )
+            else:
+                labels_a, labels_b, lam = labels, labels, 1.0
+
             if train:
                 self.optimizer.zero_grad()
 
             logits = self.model(features)
-            loss = criterion(logits, labels)
+            if train and mixup_alpha > 0:
+                loss = lam * criterion(logits, labels_a) + (1.0 - lam) * criterion(
+                    logits, labels_b
+                )
+            else:
+                loss = criterion(logits, labels)
 
             if train:
                 loss.backward()
                 self.optimizer.step()
 
             total_loss += loss.item() * labels.size(0)
-            correct += (logits.argmax(dim=1) == labels).sum().item()
+            preds = logits.argmax(dim=1)
+            if train and mixup_alpha > 0:
+                correct += (
+                    lam * (preds == labels_a).float()
+                    + (1.0 - lam) * (preds == labels_b).float()
+                ).sum().item()
+            else:
+                correct += (preds == labels).sum().item()
             total += labels.size(0)
 
         return total_loss / max(total, 1), correct / max(total, 1)
@@ -69,8 +102,15 @@ class ModelTrainer:
         checkpoint_every: int = 1,
         early_stopping_patience: int = config.EARLY_STOPPING_PATIENCE,
         label_smoothing: float = config.LABEL_SMOOTHING,
+        mixup_alpha: float = config.MIXUP_ALPHA,
     ) -> dict[str, list[float]]:
         criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode="min",
+            factor=config.LR_SCHEDULER_FACTOR,
+            patience=config.LR_SCHEDULER_PATIENCE,
+        )
         history: dict[str, list[float]] = {
             "train_loss": [],
             "train_acc": [],
@@ -86,9 +126,11 @@ class ModelTrainer:
 
         for epoch in range(1, epochs + 1):
             train_loss, train_acc = self._run_epoch(
-                train_loader, criterion, train=True
+                train_loader, criterion, train=True, mixup_alpha=mixup_alpha
             )
             val_loss, val_acc = self._run_epoch(val_loader, criterion, train=False)
+            scheduler.step(val_loss)
+            current_lr = self.optimizer.param_groups[0]["lr"]
 
             history["train_loss"].append(train_loss)
             history["train_acc"].append(train_acc)
@@ -96,7 +138,7 @@ class ModelTrainer:
             history["val_acc"].append(val_acc)
 
             print(
-                f"Epoch {epoch}/{epochs} "
+                f"Epoch {epoch}/{epochs} lr={current_lr:.2e} "
                 f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
                 f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
             )

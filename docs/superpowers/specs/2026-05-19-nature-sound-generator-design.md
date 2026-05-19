@@ -245,13 +245,15 @@ No auto-download in code; missing `ESC-50-master/audio/` fails with a pointer to
 
 ## 14. Implementation Phases
 
+Model-centric order: **CNN → LSTM → VAE**, each end-to-end (data slice, model, trainer method, tests, notebook) before the next.
+
 | Phase | Deliverable | Gate |
 |-------|-------------|------|
-| 1 | `config.py`, `make_dataset.py`, `dataloaders.py`, `pyproject.toml`, `.gitignore`, README (dataset link + paths) | User approval |
-| 2 | `cnn.py`, `lstm.py`, `vae.py` | User approval |
-| 3 | `trainer.py` | User approval |
-| 4 | `visualize.py` | User approval |
-| 5 | Four notebooks | User approval |
+| 0 | `pyproject.toml`, uv scaffold | — |
+| 1 **CNN** | Data pipeline for clips, `CNNClassifier`, `train_classifier`, CNN viz, `02-cnn-classification.ipynb` | User approval |
+| 2 **LSTM** | `LSTMSyntheticDataset`, `AudioLSTMDetector`, `train_lstm_detector`, ROC viz, `03-lstm-detection.ipynb` | User approval |
+| 3 **VAE** | `VAESynthesizer`, `train_vae`, spectrogram viz, `04-vae-synthesis.ipynb` | User approval |
+| 4 | `01-data-exploration.ipynb`, full test suite | User approval |
 
 ## 15. Out of Scope (YAGNI)
 

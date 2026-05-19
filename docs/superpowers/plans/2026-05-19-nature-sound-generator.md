@@ -10,7 +10,25 @@
 
 **Design spec:** `docs/superpowers/specs/2026-05-19-nature-sound-generator-design.md`
 
-**Gate:** Stop after each **Phase** and wait for user approval before starting the next.
+**Gate:** Stop after each **model phase** (CNN → LSTM → VAE) and wait for user approval. Debug and validate one model end-to-end before starting the next.
+
+---
+
+## Execution roadmap (model-centric)
+
+| Phase | Focus | Deliverables | Tests | Notebook |
+|-------|--------|--------------|-------|----------|
+| **0** | Scaffold | `pyproject.toml`, `uv.lock`, package inits | — | — |
+| **1** | **CNN** | Data pipeline for clips, `CNNClassifier`, `train_classifier`, CNN plots | `test_config`, `test_make_dataset`, `test_cnn_dataloader`, `test_cnn`, `test_cnn_trainer` | `02-cnn-classification.ipynb` |
+| **2** | **LSTM** | `LSTMSyntheticDataset`, `AudioLSTMDetector`, `train_lstm_detector`, ROC plots | `test_lstm_dataset`, `test_lstm`, `test_lstm_trainer` | `03-lstm-detection.ipynb` |
+| **3** | **VAE** | `VAESynthesizer`, `train_vae`, spectrogram comparison | `test_vae`, `test_vae_trainer` | `04-vae-synthesis.ipynb` |
+| **4** | Integration | `01-data-exploration.ipynb`, full `pytest`, README polish | all tests green | `01-data-exploration.ipynb` |
+
+**Incremental `ModelTrainer`:** add only the method needed per phase (`train_classifier` → `train_lstm_detector` → `train_vae`). Do not implement VAE/LSTM training loops while still debugging CNN.
+
+**Incremental `dataloaders.py`:** Phase 1 adds `ESC50Dataset` + `get_dataloaders(task="cnn"|"vae")`. Phase 2 adds `LSTMSyntheticDataset`, `collate_lstm`, and `task="lstm"`.
+
+**Incremental `visualize.py`:** Phase 1 — training curves + confusion matrix. Phase 2 — ROC. Phase 3 — spectrogram pair + Griffin-Lim.
 
 ---
 
@@ -27,7 +45,9 @@
 | `src/models/vae.py` | `VAESynthesizer` |
 | `src/models/trainer.py` | `ModelTrainer` training loops |
 | `src/visualization/visualize.py` | Plots, Griffin-Lim, metrics displays |
-| `tests/test_*.py` | Smoke tests |
+| `tests/test_cnn*.py` | CNN phase tests |
+| `tests/test_lstm*.py` | LSTM phase tests |
+| `tests/test_vae*.py` | VAE phase tests |
 | `notebooks/01-04*.ipynb` | Thin experiment runners |
 
 ---
@@ -104,7 +124,7 @@ git commit -m "chore: add uv project scaffold and src package layout"
 
 ---
 
-## Phase 1: Data layer
+## Phase 1: CNN track (data + model + train + debug)
 
 ### Task 1: `src/config.py`
 
@@ -452,32 +472,22 @@ git add src/data/make_dataset.py tests/test_make_dataset.py
 git commit -m "feat: add ESC-50 preprocessing to mel tensors"
 ```
 
-**Phase 1 gate:** User confirms `make_dataset` ran successfully on real data.
+**CNN data gate:** User confirms `make_dataset` ran successfully on real ESC-50.
 
 ---
 
-### Task 4: `dataloaders.py`
+### Task 4: `dataloaders.py` (CNN / VAE only — no LSTM yet)
 
 **Files:**
 - Create: `src/data/dataloaders.py`
-- Test: `tests/test_dataloaders.py`
+- Test: `tests/test_cnn_dataloader.py`
 
 - [ ] **Step 1: Write failing tests**
 
 ```python
-# tests/test_dataloaders.py
-import json
+# tests/test_cnn_dataloader.py
 import torch
-import pytest
-from pathlib import Path
-from unittest.mock import patch
-
-from src.data.dataloaders import (
-    ESC50Dataset,
-    LSTMSyntheticDataset,
-    fold_split,
-    collate_lstm,
-)
+from src.data.dataloaders import ESC50Dataset, fold_split
 
 def test_fold_split():
     records = [{"fold": i} for i in [1, 2, 3, 4, 5]]
@@ -485,76 +495,45 @@ def test_fold_split():
     assert len(test) == 1
     assert all(r["fold"] == 5 for r in test)
     assert all(r["fold"] == 4 for r in val)
-
-def test_collate_lstm():
-    batch = [(torch.randn(10, 128), torch.randint(0, 2, (10,)).float())] * 2
-    mels, labels = collate_lstm(batch)
-    assert mels.shape[0] == 2
-    assert labels.shape == mels.shape[:2]
 ```
 
-Add integration test `test_lstm_labels_match_mel_time` after implementation (manifest + fake wav paths mocked).
+Add `test_esc50_dataset_loads_pt` using a fixture manifest + tiny `.pt` file.
 
 - [ ] **Step 2: Run — expect FAIL**
 
-- [ ] **Step 3: Implement `src/data/dataloaders.py`**
-
-Key exports:
+- [ ] **Step 3: Implement CNN slice of `dataloaders.py`**
 
 ```python
 def fold_split(records, test_fold=5, val_fold=4) -> tuple[list, list, list]: ...
 
 class ESC50Dataset(torch.utils.data.Dataset):
-    # __getitem__ -> (tensor [1,128,128], label)
-
-class LSTMSyntheticDataset(torch.utils.data.Dataset):
-    # stitch 30s waveform from manifest-filtered clips
-    # __getitem__ -> (mel [T,128], labels [T])
-
-def collate_lstm(batch):  # pad sequences to max T in batch
+    # __getitem__ -> (tensor [1,128,128], label int)
 
 def get_dataloaders(task: str, batch_size: int, test_fold: int = 5):
-    # load manifest.json
-    # task in {"cnn","vae","lstm"}
-    # return train_loader, val_loader, test_loader
+    # Phase 1: assert task in ("cnn", "vae")
+    # load manifest.json, split by fold, return train/val/test DataLoaders
 ```
-
-**LSTM synthesis algorithm (implement exactly):**
-
-1. Load manifest; filter by split fold.
-2. Partition records: `target_pool` (target==14), `other_pool` (target!=14).
-3. Build `duration_samples = 30 * SAMPLE_RATE`.
-4. Fill timeline left-to-right with segments until duration reached:
-   - With prob 0.4 cumulative target time: pick segment from `target_pool` (loop/repeat 5s clips), label samples = 1.
-   - Else 50/50 silence (zeros) or clip from `other_pool`, label = 0.
-   - Min target segment 0.5 s.
-5. `waveform_to_mel_sequence` → `[T, 128]`.
-6. Map sample labels to frames: for each frame index `t`, `label[t] = 1` if midpoint sample in target region else `0`.
 
 - [ ] **Step 4: Run tests — expect PASS**
 
 ```bash
-uv run pytest tests/test_dataloaders.py -v
+uv run pytest tests/test_cnn_dataloader.py -v
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/data/dataloaders.py tests/test_dataloaders.py
-git commit -m "feat: add ESC50 and LSTM synthetic dataloaders with fold splits"
+git add src/data/dataloaders.py tests/test_cnn_dataloader.py
+git commit -m "feat: add ESC50 dataset and fold splits for CNN"
 ```
 
-**End Phase 1** — ask user before Phase 2.
-
 ---
-
-## Phase 2: Models
 
 ### Task 5: `CNNClassifier`
 
 **Files:**
 - Create: `src/models/cnn.py`
-- Test: `tests/test_models.py` (CNN section)
+- Test: `tests/test_cnn.py`
 
 - [ ] **Step 1: Failing test**
 
@@ -593,142 +572,216 @@ class CNNClassifier(nn.Module):
 
 - [ ] **Step 3: pytest PASS, commit** `feat: add CNN classifier for 50 ESC-50 classes`
 
+```bash
+uv run pytest tests/test_cnn.py -v
+```
+
 ---
 
-### Task 6: `AudioLSTMDetector`
+### Task 6: `ModelTrainer.train_classifier` (CNN only)
+
+**Files:**
+- Create: `src/models/trainer.py` (skeleton + `train_classifier` only)
+- Test: `tests/test_cnn_trainer.py`
+
+- [ ] **Step 1: Test** — 1-epoch smoke on `DataLoader` with 2 random batches
+
+- [ ] **Step 2: Implement** `ModelTrainer` with `train_classifier` only (`CrossEntropyLoss`, epoch loss/accuracy logs)
+
+- [ ] **Step 3: pytest PASS, commit** `feat: add CNN training loop`
+
+---
+
+### Task 7: CNN visualization
+
+**Files:**
+- Create: `src/visualization/visualize.py` (partial)
+- Functions: `plot_training_history`, `plot_confusion_matrix`
+
+- [ ] **Step 1: Implement CNN plot helpers**
+
+- [ ] **Step 2: Commit** `feat: add CNN training and confusion matrix plots`
+
+---
+
+### Task 8: CNN notebook + manual debug
+
+**Files:**
+- Create: `notebooks/02-cnn-classification.ipynb`
+
+- [ ] Run `get_dataloaders("cnn", 32)`, train 20 epochs, plot curves + confusion matrix on test fold
+- [ ] Commit `docs: add CNN classification notebook`
+
+**End Phase 1 (CNN)** — user reviews accuracy/loss, approves before LSTM.
+
+```bash
+uv run pytest tests/test_config.py tests/test_make_dataset.py tests/test_cnn_dataloader.py tests/test_cnn.py tests/test_cnn_trainer.py -v
+```
+
+---
+
+## Phase 2: LSTM track (seq2seq detection)
+
+### Task 9: Extend `dataloaders.py` for LSTM
+
+**Files:**
+- Modify: `src/data/dataloaders.py`
+- Test: `tests/test_lstm_dataset.py`
+
+- [ ] **Step 1: Write failing tests** for `LSTMSyntheticDataset`, `collate_lstm`, `get_dataloaders("lstm", ...)`
+
+```python
+def test_collate_lstm():
+    batch = [(torch.randn(10, 128), torch.zeros(10))] * 2
+    mels, labels = collate_lstm(batch)
+    assert mels.shape[0] == 2
+
+def test_lstm_labels_binary_and_align():
+    # mel.shape[0] == labels.shape[0], labels in {0.0, 1.0}
+```
+
+- [ ] **Step 2: Implement `LSTMSyntheticDataset`** (30 s waveform stitch, class 14, per-frame labels)
+
+**LSTM synthesis algorithm (implement exactly):**
+
+1. Load manifest; filter by split fold.
+2. Partition: `target_pool` (target==14), `other_pool` (target!=14).
+3. `duration_samples = 30 * SAMPLE_RATE`.
+4. Stitch segments: ~40% timeline target (label 1), else silence/other (label 0); min target segment 0.5 s.
+5. `waveform_to_mel_sequence` → `[T, 128]`.
+6. Map sample-level regions to frame labels via hop midpoint.
+
+- [ ] **Step 3: Extend `get_dataloaders` to support `task="lstm"`**
+
+- [ ] **Step 4: pytest PASS, commit** `feat: add LSTM synthetic dataset and collate`
+
+---
+
+### Task 10: `AudioLSTMDetector`
+
+**Files:**
+- Create: `src/models/lstm.py`
+- Test: `tests/test_lstm.py`
 
 - [ ] **Step 1: Test** `model(x).shape == (2, 17, 1)` for `x` shape `(2, 17, 128)`
 
-- [ ] **Step 2: Implement**
-
-```python
-class AudioLSTMDetector(nn.Module):
-    def __init__(self, input_size=128, hidden_size=128, num_layers=2):
-        super().__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 1)
-
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        return self.fc(out)
-```
+- [ ] **Step 2: Implement seq2seq LSTM** (`nn.LSTM` + per-step `Linear` → `[B, T, 1]`)
 
 - [ ] **Step 3: pytest PASS, commit** `feat: add seq2seq LSTM frame detector`
 
 ---
 
-### Task 7: `VAESynthesizer`
+### Task 11: `ModelTrainer.train_lstm_detector`
+
+**Files:**
+- Modify: `src/models/trainer.py`
+- Test: `tests/test_lstm_trainer.py`
+
+- [ ] **Step 1: Add `train_lstm_detector`** — `BCEWithLogitsLoss`, frame accuracy
+
+- [ ] **Step 2: pytest PASS, commit** `feat: add LSTM training loop`
+
+---
+
+### Task 12: LSTM visualization + notebook
+
+**Files:**
+- Modify: `src/visualization/visualize.py` — add `plot_roc_curve`
+- Create: `notebooks/03-lstm-detection.ipynb`
+
+- [ ] Train LSTM 30 epochs, ROC on test frames, timeline plot (labels vs sigmoid(logits))
+- [ ] Commit `docs: add LSTM detection notebook`
+
+**End Phase 2 (LSTM)** — user gate.
+
+```bash
+uv run pytest tests/test_lstm_dataset.py tests/test_lstm.py tests/test_lstm_trainer.py -v
+```
+
+---
+
+## Phase 3: VAE track (synthesis)
+
+### Task 13: `VAESynthesizer`
+
+**Files:**
+- Create: `src/models/vae.py`
+- Test: `tests/test_vae.py`
 
 - [ ] **Step 1: Test** forward returns `recon, mu, logvar` with `recon.shape == (2, 1, 128, 128)`
 
-- [ ] **Step 2: Implement** Encoder (Conv2d stack) → `mu`, `logvar`; `reparameterize`; Decoder (ConvTranspose2d stack). Latent dim e.g. 128.
+- [ ] **Step 2: Implement** Encoder → `mu`, `logvar`; `reparameterize`; Decoder (`ConvTranspose2d`); latent dim 128
 
 - [ ] **Step 3: pytest PASS, commit** `feat: add VAE synthesizer for mel spectrograms`
 
-**End Phase 2** — user gate.
-
 ---
 
-## Phase 3: Trainer
-
-### Task 8: `ModelTrainer`
+### Task 14: `ModelTrainer.train_vae`
 
 **Files:**
-- Create: `src/models/trainer.py`
-- Test: `tests/test_trainer.py` (one batch overfit smoke)
+- Modify: `src/models/trainer.py`
+- Test: `tests/test_vae_trainer.py`
 
-- [ ] **Step 1: Test** instantiate trainer, run `train_classifier` 1 epoch on tiny random tensor — no crash
+- [ ] **Step 1: Add `train_vae`** — MSE recon + KL, log both per epoch
 
-- [ ] **Step 2: Implement**
-
-```python
-class ModelTrainer:
-    def __init__(self, model, device=None, lr=config.LEARNING_RATE):
-        self.model = model.to(device or config.get_device())
-        self.device = device or config.get_device()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-
-    def train_classifier(self, train_loader, val_loader, epochs): ...
-    def train_lstm_detector(self, train_loader, val_loader, epochs): ...
-    def train_vae(self, train_loader, val_loader, epochs): ...
-```
-
-- `train_classifier`: `CrossEntropyLoss`, accuracy = `(pred==y).float().mean()`
-- `train_lstm`: `BCEWithLogitsLoss`, squeeze logits/labels; frame accuracy
-- `train_vae`: `recon_loss + kl_loss`, log both
-
-- [ ] **Step 3: pytest PASS, commit** `feat: add ModelTrainer with CNN/LSTM/VAE loops`
-
-**End Phase 3** — user gate.
+- [ ] **Step 2: pytest PASS, commit** `feat: add VAE training loop`
 
 ---
 
-## Phase 4: Visualization
-
-### Task 9: `visualize.py`
+### Task 15: VAE visualization + notebook
 
 **Files:**
-- Create: `src/visualization/visualize.py`
+- Modify: `src/visualization/visualize.py` — `plot_spectrogram_pair`, `mel_to_audio` (Griffin-Lim)
+- Create: `notebooks/04-vae-synthesis.ipynb`
 
-- [ ] **Step 1: Implement functions (manual smoke in REPL acceptable)**
+- [ ] Train VAE 50 epochs on `get_dataloaders("vae", 32)`, compare input/recon spectrograms
+- [ ] Commit `docs: add VAE synthesis notebook`
 
-```python
-def plot_training_history(history: dict, save_path: Path | None = None): ...
-def plot_confusion_matrix(y_true, y_pred, class_names=None): ...
-def plot_roc_curve(y_true, y_score): ...
-def plot_spectrogram_pair(original: Tensor, reconstructed: Tensor, save_path=None): ...
-def mel_to_audio(mel: Tensor, params: WaveformParams) -> Tensor:
-    # Griffin-Lim via torchaudio.transforms.GriffinLim
+**End Phase 3 (VAE)** — user gate.
+
+```bash
+uv run pytest tests/test_vae.py tests/test_vae_trainer.py -v
 ```
-
-- [ ] **Step 2: Commit** `feat: add training and evaluation visualization helpers`
-
-**End Phase 4** — user gate.
 
 ---
 
-## Phase 5: Notebooks
+## Phase 4: Integration
 
-### Task 10: `01-data-exploration.ipynb`
+### Task 16: EDA notebook
 
-- [ ] Import `config`, load `manifest.json`, show class distribution, plot 3 sample mels from `ESC50Dataset`
+- [ ] Create `notebooks/01-data-exploration.ipynb` — manifest stats, class distribution, sample spectrograms
 - [ ] Commit `docs: add data exploration notebook`
 
-### Task 11: `02-cnn-classification.ipynb`
+### Task 17: Full verification
 
-- [ ] `get_dataloaders("cnn", 32)`, `CNNClassifier`, `ModelTrainer.train_classifier`, confusion matrix via `visualize`
+```bash
+uv sync --all-extras
+uv run python -m src.data.make_dataset
+uv run pytest -v
+```
 
-### Task 12: `03-lstm-detection.ipynb`
-
-- [ ] `get_dataloaders("lstm", 8)`, train LSTM, plot ROC + one timeline of `labels` vs `sigmoid(logits)`
-
-### Task 13: `04-vae-synthesis.ipynb`
-
-- [ ] Train VAE, `plot_spectrogram_pair`, optional `mel_to_audio` playback
-
-- [ ] Final commit `docs: add training notebooks for CNN LSTM VAE`
-
-**End Phase 5** — project complete pending user review.
+**End Phase 4** — project complete pending user review.
 
 ---
 
 ## Spec coverage checklist
 
-| Spec requirement | Plan task |
-|------------------|-----------|
-| uv / pyproject | Task 0 |
-| config paths, device | Task 1 |
-| make_dataset → .pt + manifest | Task 3 |
-| ESC50Dataset, fold split | Task 4 |
-| LSTM 30s synthetic seq2seq labels | Task 4 |
-| CNN 50-class | Task 5 |
-| LSTM [B,T,1] | Task 6 |
-| VAE mu/logvar/reparam | Task 7 |
-| ModelTrainer 3 modes | Task 8 |
-| Griffin-Lim, CM, ROC, spectrogram pair | Task 9 |
-| Notebooks 01-04 | Tasks 10-13 |
+| Spec requirement | Plan phase |
+|------------------|------------|
+| uv / pyproject | Phase 0, Task 0 |
+| config paths, device | Phase 1, Task 1 |
+| make_dataset → .pt + manifest | Phase 1, Task 3 |
+| ESC50Dataset, fold split | Phase 1, Task 4 |
+| CNN 50-class + train + debug | Phase 1, Tasks 5–8 |
+| LSTM 30s synthetic seq2seq labels | Phase 2, Task 9 |
+| LSTM [B,T,1] + train + ROC | Phase 2, Tasks 10–12 |
+| VAE mu/logvar/reparam + train | Phase 3, Tasks 13–15 |
+| Griffin-Lim, spectrogram pair | Phase 3, Task 15 |
+| Confusion matrix, training curves | Phase 1, Task 7 |
+| Notebook 01 EDA | Phase 4, Task 16 |
+| Notebooks 02–04 | Phases 1–3 |
 | gitignore / README dataset | Done (pre-plan) |
-| Phase gates | After Tasks 4, 7, 8, 9, 13 |
+| Phase gates | After Phases 1, 2, 3 |
 
 ---
 

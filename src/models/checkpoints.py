@@ -33,7 +33,7 @@ class CheckpointInfo:
 
 
 def checkpoints_root() -> Path:
-    return config.CHECKPOINTS_DIR
+    return config.PROJECT_ROOT / "models" / "checkpoints"
 
 
 def model_dir(model_name: str) -> Path:

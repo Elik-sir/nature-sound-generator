@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -31,8 +32,34 @@ EPOCHS_VAE = 50
 LEARNING_RATE = 1e-3
 
 
-def get_device() -> torch.device:
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def get_device(*, require_cuda: bool = False) -> torch.device:
+    """Return training device. Set FORCE_CPU=1 to override. Set require_cuda=True to fail without GPU."""
+    if os.environ.get("FORCE_CPU", "").lower() in ("1", "true", "yes"):
+        if require_cuda:
+            raise RuntimeError("FORCE_CPU is set but CUDA was required.")
+        return torch.device("cpu")
+
+    if torch.cuda.is_available():
+        index = int(os.environ.get("CUDA_DEVICE", "0"))
+        return torch.device(f"cuda:{index}")
+
+    if require_cuda:
+        raise RuntimeError(
+            "CUDA is not available. Reinstall PyTorch with GPU support, e.g.\n"
+            "  uv sync\n"
+            "after configuring the pytorch-cu126 index in pyproject.toml, then verify:\n"
+            "  uv run python -c \"import torch; print(torch.cuda.is_available())\""
+        )
+    return torch.device("cpu")
+
+
+def describe_device(device: torch.device | None = None) -> str:
+    device = device or get_device()
+    if device.type != "cuda":
+        return f"cpu (torch {torch.__version__})"
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    name = torch.cuda.get_device_name(index)
+    return f"cuda:{index} ({name}, torch {torch.__version__})"
 
 
 def get_num_workers() -> int:

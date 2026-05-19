@@ -31,7 +31,27 @@ Processed tensors are written to `data/processed/` (also gitignored).
 ## Environment
 
 ```bash
-uv sync
+uv sync --all-extras
 ```
+
+### GPU (CUDA)
+
+This project pins **PyTorch with CUDA 12.6** wheels (`cu126`) for NVIDIA GPUs. After `uv sync`, verify:
+
+```bash
+uv run python -c "from src.config import get_device, describe_device; print(describe_device(get_device()))"
+```
+
+Expected output includes your GPU name, e.g. `cuda:0 (NVIDIA GeForce RTX 4060 Ti, torch 2.x+cu126)`.
+
+If you see `cpu` or `cuda_available False`, reinstall deps:
+
+```bash
+uv sync --reinstall-package torch --reinstall-package torchaudio
+```
+
+Training uses GPU automatically. To force CPU (debug only): `set FORCE_CPU=1` (Windows) or `export FORCE_CPU=1` (Linux/macOS).
+
+Optional: `CUDA_DEVICE=0` to pick a GPU index.
 
 See `docs/superpowers/specs/2026-05-19-nature-sound-generator-design.md` for full architecture and implementation phases.

@@ -15,8 +15,10 @@ class ModelTrainer:
         model: nn.Module,
         device: torch.device | None = None,
         lr: float = config.LEARNING_RATE,
+        require_cuda: bool = False,
     ):
-        self.device = device or config.get_device()
+        self.device = device or config.get_device(require_cuda=require_cuda)
+        print(f"Training on: {config.describe_device(self.device)}")
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
 

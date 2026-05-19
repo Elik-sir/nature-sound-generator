@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,14 +13,11 @@ from torch.optim import Optimizer
 from src import config
 
 REGISTRY_FILENAME = "registry.json"
-CHECKPOINT_FILENAME = "checkpoint.pt"
 BEST_FILENAME = "best.pt"
-LATEST_FILENAME = "latest.pt"
 
 
 @dataclass
 class CheckpointInfo:
-    version: int
     run_id: str
     path: Path
     metrics: dict[str, float]
@@ -31,9 +27,13 @@ class CheckpointInfo:
     def val_acc(self) -> float:
         return float(self.metrics.get("val_acc", 0.0))
 
+    @property
+    def val_loss(self) -> float:
+        return float(self.metrics.get("val_loss", float("inf")))
+
 
 def checkpoints_root() -> Path:
-    return config.PROJECT_ROOT / "models" / "checkpoints"
+    return config.CHECKPOINTS_DIR
 
 
 def model_dir(model_name: str) -> Path:
@@ -44,78 +44,60 @@ def _registry_path(model_name: str) -> Path:
     return model_dir(model_name) / REGISTRY_FILENAME
 
 
-def _load_registry(model_name: str) -> dict[str, Any]:
+def _best_path(model_name: str) -> Path:
+    return model_dir(model_name) / BEST_FILENAME
+
+
+def _load_registry(model_name: str) -> dict[str, Any] | None:
     path = _registry_path(model_name)
     if not path.exists():
-        return {"versions": [], "best_version": None}
+        return None
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
-def _save_registry(model_name: str, registry: dict[str, Any]) -> None:
-    path = _registry_path(model_name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(registry, f, indent=2)
-
-
-def _next_version(model_name: str) -> int:
-    registry = _load_registry(model_name)
-    if not registry["versions"]:
-        return 1
-    return max(v["version"] for v in registry["versions"]) + 1
-
-
-def _new_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-
-
-def list_versions(model_name: str) -> list[CheckpointInfo]:
-    registry = _load_registry(model_name)
-    return [
-        CheckpointInfo(
-            version=entry["version"],
-            run_id=entry["run_id"],
-            path=config.PROJECT_ROOT / entry["path"],
-            metrics=entry.get("metrics", {}),
-            epoch=int(entry.get("epoch", 0)),
-        )
-        for entry in sorted(registry["versions"], key=lambda e: e["version"])
-    ]
+def _save_registry(model_name: str, entry: dict[str, Any]) -> None:
+    model_dir(model_name).mkdir(parents=True, exist_ok=True)
+    with open(_registry_path(model_name), "w", encoding="utf-8") as f:
+        json.dump(entry, f, indent=2)
 
 
 def get_best_checkpoint(model_name: str) -> CheckpointInfo | None:
     registry = _load_registry(model_name)
-    best_version = registry.get("best_version")
-    if best_version is None:
+    best_path = _best_path(model_name)
+    if registry is None or not best_path.exists():
         return None
-    for entry in registry["versions"]:
-        if entry["version"] == best_version:
-            return CheckpointInfo(
-                version=entry["version"],
-                run_id=entry["run_id"],
-                path=config.PROJECT_ROOT / entry["path"],
-                metrics=entry.get("metrics", {}),
-                epoch=int(entry.get("epoch", 0)),
-            )
-    return None
+    return CheckpointInfo(
+        run_id=registry["run_id"],
+        path=best_path,
+        metrics=registry.get("metrics", {}),
+        epoch=int(registry.get("epoch", 0)),
+    )
 
 
-def _build_payload(
+def list_versions(model_name: str) -> list[CheckpointInfo]:
+    """Returns at most one entry — only the best weights are kept."""
+    info = get_best_checkpoint(model_name)
+    return [info] if info else []
+
+
+def save_best(
     model_name: str,
     model: nn.Module,
     *,
-    version: int,
-    run_id: str,
-    optimizer: Optimizer | None,
+    optimizer: Optimizer | None = None,
     epoch: int,
     metrics: dict[str, float],
-    history: dict[str, list[float]] | None,
-    extra: dict[str, Any] | None,
-) -> dict[str, Any]:
+    history: dict[str, list[float]] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> CheckpointInfo:
+    """Overwrite the single best checkpoint for this model."""
+    model_dir(model_name).mkdir(parents=True, exist_ok=True)
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    path = _best_path(model_name)
+
     payload: dict[str, Any] = {
         "model_name": model_name,
-        "version": version,
         "run_id": run_id,
         "epoch": epoch,
         "metrics": metrics,
@@ -126,102 +108,26 @@ def _build_payload(
     }
     if optimizer is not None:
         payload["optimizer_state_dict"] = optimizer.state_dict()
-    return payload
 
-
-def save_latest_snapshot(
-    model_name: str,
-    model: nn.Module,
-    *,
-    optimizer: Optimizer | None = None,
-    epoch: int,
-    metrics: dict[str, float],
-    history: dict[str, list[float]] | None = None,
-    extra: dict[str, Any] | None = None,
-) -> Path:
-    """Overwrite latest.pt without bumping version (resume / last epoch)."""
-    model_dir(model_name).mkdir(parents=True, exist_ok=True)
-    best = get_best_checkpoint(model_name)
-    version = best.version if best else 0
-    run_id = best.run_id if best else "snapshot"
-    payload = _build_payload(
-        model_name,
-        model,
-        version=version,
-        run_id=run_id,
-        optimizer=optimizer,
-        epoch=epoch,
-        metrics=metrics,
-        history=history,
-        extra=extra,
-    )
-    path = model_dir(model_name) / LATEST_FILENAME
     torch.save(payload, path)
-    return path
 
-
-def save_checkpoint(
-    model_name: str,
-    model: nn.Module,
-    *,
-    optimizer: Optimizer | None = None,
-    epoch: int,
-    metrics: dict[str, float],
-    history: dict[str, list[float]] | None = None,
-    extra: dict[str, Any] | None = None,
-    is_best: bool = False,
-) -> CheckpointInfo:
-    """Save a versioned checkpoint and update registry + best.pt + latest.pt."""
-    version = _next_version(model_name)
-    run_id = _new_run_id()
-    run_dir = model_dir(model_name) / f"v{version:03d}_{run_id}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    checkpoint_path = run_dir / CHECKPOINT_FILENAME
-    payload = _build_payload(
-        model_name,
-        model,
-        version=version,
-        run_id=run_id,
-        optimizer=optimizer,
-        epoch=epoch,
-        metrics=metrics,
-        history=history,
-        extra=extra,
-    )
-    torch.save(payload, checkpoint_path)
-
-    rel_path = checkpoint_path.relative_to(config.PROJECT_ROOT).as_posix()
     entry = {
-        "version": version,
         "run_id": run_id,
-        "path": rel_path,
+        "path": path.relative_to(config.PROJECT_ROOT).as_posix(),
         "epoch": epoch,
         "metrics": metrics,
         "created_at": payload["created_at"],
     }
-
-    registry = _load_registry(model_name)
-    registry["versions"].append(entry)
-
-    if is_best or registry.get("best_version") is None:
-        registry["best_version"] = version
-        shutil.copy2(checkpoint_path, model_dir(model_name) / BEST_FILENAME)
-
-    shutil.copy2(checkpoint_path, model_dir(model_name) / LATEST_FILENAME)
-    _save_registry(model_name, registry)
+    _save_registry(model_name, entry)
 
     print(
-        f"Saved checkpoint v{version:03d} ({model_name}) "
-        f"val_acc={metrics.get('val_acc', 0):.4f} -> {checkpoint_path}"
+        f"Saved best {model_name} (epoch {epoch}) "
+        f"val_loss={metrics.get('val_loss', 0):.4f} "
+        f"val_acc={metrics.get('val_acc', 0):.4f} -> {path}"
     )
-    if is_best:
-        print(f"  New best model (v{version:03d})")
-
     return CheckpointInfo(
-        version=version,
         run_id=run_id,
-        path=checkpoint_path,
+        path=path,
         metrics=metrics,
         epoch=epoch,
     )
@@ -234,7 +140,6 @@ def load_checkpoint(
     *,
     map_location: str | torch.device | None = None,
 ) -> dict[str, Any]:
-    """Load weights into model (and optimizer if provided). Returns full payload."""
     path = Path(path)
     if not path.is_absolute():
         path = config.PROJECT_ROOT / path
@@ -257,8 +162,8 @@ def load_best(
         return None
     payload = load_checkpoint(info.path, model, optimizer)
     print(
-        f"Loaded best {model_name} v{info.version:03d} "
-        f"(val_acc={info.val_acc:.4f}, epoch={info.epoch})"
+        f"Loaded best {model_name} (epoch={info.epoch}, "
+        f"val_loss={info.val_loss:.4f}, val_acc={info.val_acc:.4f})"
     )
     return payload
 
@@ -268,12 +173,5 @@ def load_latest(
     model: nn.Module,
     optimizer: Optimizer | None = None,
 ) -> dict[str, Any] | None:
-    latest_path = model_dir(model_name) / LATEST_FILENAME
-    if not latest_path.exists():
-        return None
-    payload = load_checkpoint(latest_path, model, optimizer)
-    print(
-        f"Loaded latest {model_name} v{payload.get('version')} "
-        f"(val_acc={payload.get('metrics', {}).get('val_acc', 0):.4f})"
-    )
-    return payload
+    """Alias for load_best — only the best weights are stored."""
+    return load_best(model_name, model, optimizer)

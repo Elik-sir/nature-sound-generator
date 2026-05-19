@@ -56,14 +56,13 @@ Optional: `CUDA_DEVICE=0` to pick a GPU index.
 
 ### Model checkpoints (versioned)
 
-Weights are saved under `models/checkpoints/{cnn|lstm|vae}/` (gitignored):
+Weights are saved under `models/checkpoints/{cnn|lstm|vae}/` (gitignored). **Only the best run is kept** (lowest `val_loss` during training):
 
-- `v001_YYYYMMDD_HHMMSS/checkpoint.pt` — each save (per epoch by default)
-- `best.pt` / `latest.pt` — quick load symlinks (copies)
-- `registry.json` — all versions with `val_acc`, `val_loss`, epoch
+- `best.pt` — model + optimizer + metrics + training history
+- `registry.json` — metadata for the current best
 
 ```bash
-uv run python -c "from src.models import checkpoints; print(checkpoints.list_versions('cnn'))"
+uv run python -c "from src.models import checkpoints; print(checkpoints.get_best_checkpoint('cnn'))"
 ```
 
 In code: `checkpoints.load_best("cnn", model)` before evaluation to skip retraining.

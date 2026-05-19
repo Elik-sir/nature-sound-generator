@@ -99,7 +99,6 @@ class ModelTrainer:
         epochs: int = config.EPOCHS_CNN,
         *,
         save_checkpoints: bool = True,
-        checkpoint_every: int = 1,
         early_stopping_patience: int = config.EARLY_STOPPING_PATIENCE,
         label_smoothing: float = config.LABEL_SMOOTHING,
         mixup_alpha: float = config.MIXUP_ALPHA,
@@ -117,11 +116,9 @@ class ModelTrainer:
             "val_loss": [],
             "val_acc": [],
         }
-        best_val_acc = -1.0
         best_val_loss = float("inf")
         best_state: dict | None = None
         patience_counter = 0
-        last_checkpoint: checkpoints.CheckpointInfo | None = None
         stopped_early = False
 
         for epoch in range(1, epochs + 1):
@@ -147,45 +144,28 @@ class ModelTrainer:
                 best_val_loss = val_loss
                 best_state = copy.deepcopy(self.model.state_dict())
                 patience_counter = 0
+                if save_checkpoints:
+                    checkpoints.save_best(
+                        self.model_name,
+                        self.model,
+                        optimizer=self.optimizer,
+                        epoch=epoch,
+                        metrics={
+                            "train_loss": train_loss,
+                            "train_acc": train_acc,
+                            "val_loss": val_loss,
+                            "val_acc": val_acc,
+                        },
+                        history=history,
+                        extra={
+                            "epochs_planned": epochs,
+                            "lr": config.LEARNING_RATE,
+                            "weight_decay": config.WEIGHT_DECAY,
+                            "label_smoothing": label_smoothing,
+                        },
+                    )
             else:
                 patience_counter += 1
-
-            if save_checkpoints and epoch % checkpoint_every == 0:
-                metrics = {
-                    "train_loss": train_loss,
-                    "train_acc": train_acc,
-                    "val_loss": val_loss,
-                    "val_acc": val_acc,
-                }
-                extra = {
-                    "epochs_planned": epochs,
-                    "lr": config.LEARNING_RATE,
-                    "weight_decay": config.WEIGHT_DECAY,
-                    "label_smoothing": label_smoothing,
-                }
-                is_best = val_acc > best_val_acc
-                if is_best:
-                    best_val_acc = val_acc
-                    last_checkpoint = checkpoints.save_checkpoint(
-                        self.model_name,
-                        self.model,
-                        optimizer=self.optimizer,
-                        epoch=epoch,
-                        metrics=metrics,
-                        history=history,
-                        extra=extra,
-                        is_best=True,
-                    )
-                else:
-                    checkpoints.save_latest_snapshot(
-                        self.model_name,
-                        self.model,
-                        optimizer=self.optimizer,
-                        epoch=epoch,
-                        metrics=metrics,
-                        history=history,
-                        extra=extra,
-                    )
 
             if patience_counter >= early_stopping_patience:
                 print(
@@ -198,14 +178,6 @@ class ModelTrainer:
         if best_state is not None:
             self.model.load_state_dict(best_state)
             print(f"Restored weights with best val_loss={best_val_loss:.4f}")
-
-        if save_checkpoints and last_checkpoint is not None:
-            best = checkpoints.get_best_checkpoint(self.model_name)
-            if best:
-                print(
-                    f"Best checkpoint (by val_acc): v{best.version:03d} "
-                    f"val_acc={best.val_acc:.4f} ({best.path})"
-                )
 
         if stopped_early:
             history.setdefault("notes", []).append("early_stopping")

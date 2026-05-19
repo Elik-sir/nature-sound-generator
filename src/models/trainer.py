@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -14,6 +16,7 @@ class ModelTrainer:
         model: nn.Module,
         device: torch.device | None = None,
         lr: float = config.LEARNING_RATE,
+        weight_decay: float = config.WEIGHT_DECAY,
         require_cuda: bool = False,
         model_name: str = "cnn",
     ):
@@ -21,7 +24,9 @@ class ModelTrainer:
         self.model_name = model_name
         print(f"Training on: {config.describe_device(self.device)}")
         self.model = model.to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(), lr=lr, weight_decay=weight_decay
+        )
 
     def _run_epoch(
         self,
@@ -62,8 +67,10 @@ class ModelTrainer:
         *,
         save_checkpoints: bool = True,
         checkpoint_every: int = 1,
+        early_stopping_patience: int = config.EARLY_STOPPING_PATIENCE,
+        label_smoothing: float = config.LABEL_SMOOTHING,
     ) -> dict[str, list[float]]:
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         history: dict[str, list[float]] = {
             "train_loss": [],
             "train_acc": [],
@@ -71,7 +78,11 @@ class ModelTrainer:
             "val_acc": [],
         }
         best_val_acc = -1.0
+        best_val_loss = float("inf")
+        best_state: dict | None = None
+        patience_counter = 0
         last_checkpoint: checkpoints.CheckpointInfo | None = None
+        stopped_early = False
 
         for epoch in range(1, epochs + 1):
             train_loss, train_acc = self._run_epoch(
@@ -90,6 +101,13 @@ class ModelTrainer:
                 f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
             )
 
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = copy.deepcopy(self.model.state_dict())
+                patience_counter = 0
+            else:
+                patience_counter += 1
+
             if save_checkpoints and epoch % checkpoint_every == 0:
                 metrics = {
                     "train_loss": train_loss,
@@ -97,7 +115,12 @@ class ModelTrainer:
                     "val_loss": val_loss,
                     "val_acc": val_acc,
                 }
-                extra = {"epochs_planned": epochs, "lr": config.LEARNING_RATE}
+                extra = {
+                    "epochs_planned": epochs,
+                    "lr": config.LEARNING_RATE,
+                    "weight_decay": config.WEIGHT_DECAY,
+                    "label_smoothing": label_smoothing,
+                }
                 is_best = val_acc > best_val_acc
                 if is_best:
                     best_val_acc = val_acc
@@ -122,14 +145,28 @@ class ModelTrainer:
                         extra=extra,
                     )
 
+            if patience_counter >= early_stopping_patience:
+                print(
+                    f"Early stopping: no val_loss improvement for "
+                    f"{early_stopping_patience} epochs (best val_loss={best_val_loss:.4f})"
+                )
+                stopped_early = True
+                break
+
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+            print(f"Restored weights with best val_loss={best_val_loss:.4f}")
+
         if save_checkpoints and last_checkpoint is not None:
             best = checkpoints.get_best_checkpoint(self.model_name)
             if best:
                 print(
-                    f"Best checkpoint: v{best.version:03d} "
+                    f"Best checkpoint (by val_acc): v{best.version:03d} "
                     f"val_acc={best.val_acc:.4f} ({best.path})"
                 )
 
+        if stopped_early:
+            history.setdefault("notes", []).append("early_stopping")
         return history
 
     def predict_classifier(self, loader: DataLoader) -> tuple[list[int], list[int]]:

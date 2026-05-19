@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from src import config
+from src.data.augment import augment_mel
 
 
 def load_manifest(path: Path | None = None) -> list[dict]:
@@ -29,9 +30,15 @@ def fold_split(
 
 
 class ESC50Dataset(Dataset):
-    def __init__(self, records: list[dict], root: Path | None = None):
+    def __init__(
+        self,
+        records: list[dict],
+        root: Path | None = None,
+        augment: bool = False,
+    ):
         self.records = records
         self.root = root or config.PROJECT_ROOT
+        self.augment = augment
 
     def __len__(self) -> int:
         return len(self.records)
@@ -42,14 +49,20 @@ class ESC50Dataset(Dataset):
         spectrogram = torch.load(path, weights_only=True)
         if spectrogram.dim() == 2:
             spectrogram = spectrogram.unsqueeze(0)
+        if self.augment:
+            spectrogram = augment_mel(spectrogram)
         return spectrogram, int(record["target"])
 
 
 def _make_loader(
-    records: list[dict], batch_size: int, shuffle: bool
+    records: list[dict],
+    batch_size: int,
+    shuffle: bool,
+    *,
+    augment: bool = False,
 ) -> DataLoader:
     return DataLoader(
-        ESC50Dataset(records),
+        ESC50Dataset(records, augment=augment),
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=config.get_num_workers(),
@@ -73,7 +86,9 @@ def get_dataloaders(
         records, test_fold=test_fold, val_fold=val_fold
     )
 
-    train_loader = _make_loader(train_records, batch_size, shuffle=True)
+    train_loader = _make_loader(
+        train_records, batch_size, shuffle=True, augment=(task == "cnn")
+    )
     val_loader = _make_loader(val_records, batch_size, shuffle=False)
     test_loader = _make_loader(test_records, batch_size, shuffle=False)
     return train_loader, val_loader, test_loader

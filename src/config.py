@@ -11,6 +11,7 @@ RAW_AUDIO_DIR = PROJECT_ROOT / "ESC-50-master" / "audio"
 META_CSV = PROJECT_ROOT / "ESC-50-master" / "meta" / "esc50.csv"
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 MANIFEST_PATH = PROCESSED_DIR / "manifest.json"
+CHECKPOINTS_DIR = PROJECT_ROOT / "models" / "checkpoints"
 
 TARGET_CLASS = 14
 LSTM_DURATION_S = 30

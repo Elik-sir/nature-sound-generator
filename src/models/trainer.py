@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
-
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from src import config
+from src.models import checkpoints
 
 
 class ModelTrainer:
@@ -16,8 +15,10 @@ class ModelTrainer:
         device: torch.device | None = None,
         lr: float = config.LEARNING_RATE,
         require_cuda: bool = False,
+        model_name: str = "cnn",
     ):
         self.device = device or config.get_device(require_cuda=require_cuda)
+        self.model_name = model_name
         print(f"Training on: {config.describe_device(self.device)}")
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
@@ -58,6 +59,9 @@ class ModelTrainer:
         train_loader: DataLoader,
         val_loader: DataLoader,
         epochs: int = config.EPOCHS_CNN,
+        *,
+        save_checkpoints: bool = True,
+        checkpoint_every: int = 1,
     ) -> dict[str, list[float]]:
         criterion = nn.CrossEntropyLoss()
         history: dict[str, list[float]] = {
@@ -66,6 +70,8 @@ class ModelTrainer:
             "val_loss": [],
             "val_acc": [],
         }
+        best_val_acc = -1.0
+        last_checkpoint: checkpoints.CheckpointInfo | None = None
 
         for epoch in range(1, epochs + 1):
             train_loss, train_acc = self._run_epoch(
@@ -83,6 +89,46 @@ class ModelTrainer:
                 f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
                 f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
             )
+
+            if save_checkpoints and epoch % checkpoint_every == 0:
+                metrics = {
+                    "train_loss": train_loss,
+                    "train_acc": train_acc,
+                    "val_loss": val_loss,
+                    "val_acc": val_acc,
+                }
+                extra = {"epochs_planned": epochs, "lr": config.LEARNING_RATE}
+                is_best = val_acc > best_val_acc
+                if is_best:
+                    best_val_acc = val_acc
+                    last_checkpoint = checkpoints.save_checkpoint(
+                        self.model_name,
+                        self.model,
+                        optimizer=self.optimizer,
+                        epoch=epoch,
+                        metrics=metrics,
+                        history=history,
+                        extra=extra,
+                        is_best=True,
+                    )
+                else:
+                    checkpoints.save_latest_snapshot(
+                        self.model_name,
+                        self.model,
+                        optimizer=self.optimizer,
+                        epoch=epoch,
+                        metrics=metrics,
+                        history=history,
+                        extra=extra,
+                    )
+
+        if save_checkpoints and last_checkpoint is not None:
+            best = checkpoints.get_best_checkpoint(self.model_name)
+            if best:
+                print(
+                    f"Best checkpoint: v{best.version:03d} "
+                    f"val_acc={best.val_acc:.4f} ({best.path})"
+                )
 
         return history
 

@@ -54,4 +54,18 @@ Training uses GPU automatically. To force CPU (debug only): `set FORCE_CPU=1` (W
 
 Optional: `CUDA_DEVICE=0` to pick a GPU index.
 
+### Model checkpoints (versioned)
+
+Weights are saved under `models/checkpoints/{cnn|lstm|vae}/` (gitignored):
+
+- `v001_YYYYMMDD_HHMMSS/checkpoint.pt` — each save (per epoch by default)
+- `best.pt` / `latest.pt` — quick load symlinks (copies)
+- `registry.json` — all versions with `val_acc`, `val_loss`, epoch
+
+```bash
+uv run python -c "from src.models import checkpoints; print(checkpoints.list_versions('cnn'))"
+```
+
+In code: `checkpoints.load_best("cnn", model)` before evaluation to skip retraining.
+
 See `docs/superpowers/specs/2026-05-19-nature-sound-generator-design.md` for full architecture and implementation phases.

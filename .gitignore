@@ -2,6 +2,7 @@
 ESC-50-master/
 data/raw/
 data/processed/
+notebooks/data/processed/
 models/checkpoints/
 
 # --- Audio (any path in the repo) ---

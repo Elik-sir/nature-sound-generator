@@ -59,3 +59,25 @@ def waveform_to_mel_sequence(
     mel = _mel_transform(params)(waveform).squeeze(0)
     mel = (mel - mel.mean()) / (mel.std() + 1e-6)
     return mel.transpose(0, 1)
+
+
+def waveform_to_log_mel_vae(
+    waveform: torch.Tensor, params: WaveformParams | None = None
+) -> torch.Tensor:
+    """
+    VAE preprocessing: log-mel resized to 128x128 without z-score normalization.
+    Keeps amplitude structure more faithful for inversion during listening.
+    """
+    params = params or WaveformParams()
+    if waveform.dim() == 1:
+        waveform = waveform.unsqueeze(0)
+    mel = _mel_transform(params)(waveform)
+    log_mel = torch.log(mel.clamp_min(1e-6))
+    log_mel = log_mel.clamp(min=config.VAE_LOG_MEL_MIN, max=config.VAE_LOG_MEL_MAX)
+    log_mel = F.interpolate(
+        log_mel.unsqueeze(0),
+        size=(config.MEL_SIZE, config.MEL_SIZE),
+        mode="bilinear",
+        align_corners=False,
+    )
+    return log_mel.squeeze(0)

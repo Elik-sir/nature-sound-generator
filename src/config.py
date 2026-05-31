@@ -27,9 +27,17 @@ RANDOM_SEED = 42
 
 BATCH_SIZE_CNN = 32
 BATCH_SIZE_LSTM = 8
+BATCH_SIZE_VAE = 8
 EPOCHS_CNN = 80
-EPOCHS_LSTM = 30
+EPOCHS_LSTM = 5
 EPOCHS_VAE = 50
+VAE_TARGET_CLASS = TARGET_CLASS
+VAE_KL_WARMUP_EPOCHS = 10
+VAE_CROP_SECONDS = 4.0
+VAE_BETA_KL = 0.05
+VAE_LOG_MEL_MIN = -12.0
+VAE_LOG_MEL_MAX = 2.0
+VAE_DELTA_LOSS_WEIGHT = 0.5
 
 # CNN: "light" (~300k params) generalizes better on ESC-50; "resnet18" overfits easily
 CNN_ARCH = "light"
@@ -58,6 +66,14 @@ AUG_NOISE_PROB = 0.4
 AUG_NOISE_STD = 0.08
 AUG_GAIN_MIN = 0.85
 AUG_GAIN_MAX = 1.15
+
+# Audio waveform augmentation (applied before mel conversion, train only)
+ENABLE_AUDIO_AUGMENT = True
+AUDIO_AUG_PROB = 0.5
+AUDIO_SHIFT_MAX_SECONDS = 0.2
+AUDIO_NOISE_STD = 0.01
+AUDIO_GAIN_MIN = 0.8
+AUDIO_GAIN_MAX = 1.2
 
 
 def get_device(*, require_cuda: bool = False) -> torch.device:

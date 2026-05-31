@@ -39,3 +39,29 @@ def augment_mel(spec: torch.Tensor) -> torch.Tensor:
     gain = random.uniform(config.AUG_GAIN_MIN, config.AUG_GAIN_MAX)
     spec = spec * gain
     return spec
+
+
+def augment_waveform(waveform: torch.Tensor, sample_rate: int) -> torch.Tensor:
+    """Lightweight waveform augmentation for ESC-50 training."""
+    if waveform.dim() == 1:
+        waveform = waveform.unsqueeze(0)
+
+    augmented = waveform.clone()
+
+    # Random circular time shift up to configured max seconds.
+    max_shift = int(config.AUDIO_SHIFT_MAX_SECONDS * sample_rate)
+    if max_shift > 0:
+        shift = random.randint(-max_shift, max_shift)
+        if shift != 0:
+            augmented = torch.roll(augmented, shifts=shift, dims=-1)
+
+    # Random gain.
+    gain = random.uniform(config.AUDIO_GAIN_MIN, config.AUDIO_GAIN_MAX)
+    augmented = augmented * gain
+
+    # Additive gaussian noise.
+    if config.AUDIO_NOISE_STD > 0:
+        augmented = augmented + config.AUDIO_NOISE_STD * torch.randn_like(augmented)
+
+    # Keep waveform in valid audio range.
+    return augmented.clamp(-1.0, 1.0)

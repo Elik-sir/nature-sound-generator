@@ -229,3 +229,247 @@ class ModelTrainer:
                 y_true.extend(labels.tolist())
 
         return y_true, y_pred
+
+    def _run_lstm_epoch(
+        self,
+        loader: DataLoader,
+        criterion: nn.Module,
+        train: bool,
+    ) -> tuple[float, float]:
+        self.model.train(train)
+        total_loss = 0.0
+        correct = 0.0
+        total = 0
+
+        for features, labels in loader:
+            features = features.to(self.device)
+            labels = labels.to(self.device).float()
+
+            if train:
+                self.optimizer.zero_grad()
+
+            logits = self.model(features).squeeze(-1)
+            loss = criterion(logits, labels)
+
+            if train:
+                loss.backward()
+                self.optimizer.step()
+
+            probs = torch.sigmoid(logits)
+            preds = (probs >= 0.5).float()
+            correct += (preds == labels).float().sum().item()
+            total += labels.numel()
+            total_loss += loss.item() * labels.numel()
+
+        return total_loss / max(total, 1), correct / max(total, 1)
+
+    def train_lstm_detector(
+        self,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        epochs: int = config.EPOCHS_LSTM,
+        *,
+        save_checkpoints: bool = True,
+    ) -> dict[str, list[float]]:
+        criterion = nn.BCEWithLogitsLoss()
+        history: dict[str, list[float]] = {
+            "train_loss": [],
+            "train_acc": [],
+            "val_loss": [],
+            "val_acc": [],
+        }
+        best_val_loss = float("inf")
+        best_state: dict | None = None
+
+        for epoch in range(1, epochs + 1):
+            train_loss, train_acc = self._run_lstm_epoch(train_loader, criterion, train=True)
+            val_loss, val_acc = self._run_lstm_epoch(val_loader, criterion, train=False)
+
+            history["train_loss"].append(train_loss)
+            history["train_acc"].append(train_acc)
+            history["val_loss"].append(val_loss)
+            history["val_acc"].append(val_acc)
+
+            print(
+                f"Epoch {epoch}/{epochs} "
+                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
+                f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
+            )
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = copy.deepcopy(self.model.state_dict())
+                if save_checkpoints:
+                    checkpoints.save_best(
+                        self.model_name,
+                        self.model,
+                        optimizer=self.optimizer,
+                        epoch=epoch,
+                        metrics={
+                            "train_loss": train_loss,
+                            "train_acc": train_acc,
+                            "val_loss": val_loss,
+                            "val_acc": val_acc,
+                        },
+                        history=history,
+                        extra={
+                            "epochs_planned": epochs,
+                            "lr": self._lr,
+                            "weight_decay": self._weight_decay,
+                        },
+                    )
+
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+            print(
+                f"Restored best LSTM weights (val_loss={best_val_loss:.4f}). "
+                "Use these for test evaluation."
+            )
+        return history
+
+    def predict_lstm_scores(self, loader: DataLoader) -> tuple[list[float], list[float]]:
+        self.model.eval()
+        y_true: list[float] = []
+        y_score: list[float] = []
+
+        with torch.no_grad():
+            for features, labels in loader:
+                features = features.to(self.device)
+                logits = self.model(features).squeeze(-1)
+                probs = torch.sigmoid(logits).cpu()
+                y_score.extend(probs.flatten().tolist())
+                y_true.extend(labels.flatten().tolist())
+
+        return y_true, y_score
+
+    def _run_vae_epoch(
+        self,
+        loader: DataLoader,
+        train: bool,
+        *,
+        beta_kl: float = 1.0,
+        delta_weight: float = config.VAE_DELTA_LOSS_WEIGHT,
+    ) -> tuple[float, float, float]:
+        self.model.train(train)
+        total_loss = 0.0
+        total_recon = 0.0
+        total_kl = 0.0
+        total = 0
+
+        for features, _ in loader:
+            features = features.to(self.device)
+            if train:
+                self.optimizer.zero_grad()
+
+            recon, mu, logvar = self.model(features)
+            recon_l1 = nn.functional.l1_loss(recon, features, reduction="mean")
+            time_delta_recon = recon[:, :, :, 1:] - recon[:, :, :, :-1]
+            time_delta_target = features[:, :, :, 1:] - features[:, :, :, :-1]
+            freq_delta_recon = recon[:, :, 1:, :] - recon[:, :, :-1, :]
+            freq_delta_target = features[:, :, 1:, :] - features[:, :, :-1, :]
+            time_delta_loss = nn.functional.l1_loss(
+                time_delta_recon, time_delta_target, reduction="mean"
+            )
+            freq_delta_loss = nn.functional.l1_loss(
+                freq_delta_recon, freq_delta_target, reduction="mean"
+            )
+            recon_loss = recon_l1 + delta_weight * (time_delta_loss + freq_delta_loss)
+            kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+            loss = recon_loss + beta_kl * kl_loss
+
+            if train:
+                loss.backward()
+                self.optimizer.step()
+
+            batch_size = features.size(0)
+            total += batch_size
+            total_loss += loss.item() * batch_size
+            total_recon += recon_loss.item() * batch_size
+            total_kl += kl_loss.item() * batch_size
+
+        denom = max(total, 1)
+        return total_loss / denom, total_recon / denom, total_kl / denom
+
+    def train_vae(
+        self,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        epochs: int = config.EPOCHS_VAE,
+        *,
+        beta_kl: float = config.VAE_BETA_KL,
+        kl_warmup_epochs: int = config.VAE_KL_WARMUP_EPOCHS,
+        delta_weight: float = config.VAE_DELTA_LOSS_WEIGHT,
+        save_checkpoints: bool = True,
+    ) -> dict[str, list[float]]:
+        history: dict[str, list[float]] = {
+            "train_loss": [],
+            "train_recon": [],
+            "train_kl": [],
+            "val_loss": [],
+            "val_recon": [],
+            "val_kl": [],
+            "beta_kl": [],
+        }
+        best_val_loss = float("inf")
+        best_state: dict | None = None
+
+        for epoch in range(1, epochs + 1):
+            warmup_ratio = min(1.0, epoch / max(1, kl_warmup_epochs))
+            current_beta = beta_kl * warmup_ratio
+            train_loss, train_recon, train_kl = self._run_vae_epoch(
+                train_loader, train=True, beta_kl=current_beta, delta_weight=delta_weight
+            )
+            val_loss, val_recon, val_kl = self._run_vae_epoch(
+                val_loader, train=False, beta_kl=current_beta, delta_weight=delta_weight
+            )
+
+            history["train_loss"].append(train_loss)
+            history["train_recon"].append(train_recon)
+            history["train_kl"].append(train_kl)
+            history["val_loss"].append(val_loss)
+            history["val_recon"].append(val_recon)
+            history["val_kl"].append(val_kl)
+            history["beta_kl"].append(current_beta)
+
+            print(
+                f"Epoch {epoch}/{epochs} "
+                f"beta_kl={current_beta:.3f} "
+                f"train_loss={train_loss:.4f} train_recon={train_recon:.4f} train_kl={train_kl:.4f} "
+                f"val_loss={val_loss:.4f} val_recon={val_recon:.4f} val_kl={val_kl:.4f}"
+            )
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = copy.deepcopy(self.model.state_dict())
+                if save_checkpoints:
+                    checkpoints.save_best(
+                        self.model_name,
+                        self.model,
+                        optimizer=self.optimizer,
+                        epoch=epoch,
+                        metrics={
+                            "train_loss": train_loss,
+                            "train_recon": train_recon,
+                            "train_kl": train_kl,
+                            "val_loss": val_loss,
+                            "val_recon": val_recon,
+                            "val_kl": val_kl,
+                        },
+                        history=history,
+                        extra={
+                            "epochs_planned": epochs,
+                            "beta_kl": beta_kl,
+                            "kl_warmup_epochs": kl_warmup_epochs,
+                            "delta_weight": delta_weight,
+                            "lr": self._lr,
+                            "weight_decay": self._weight_decay,
+                        },
+                    )
+
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+            print(
+                f"Restored best VAE weights (val_loss={best_val_loss:.4f}). "
+                "Use these for reconstruction evaluation."
+            )
+        return history

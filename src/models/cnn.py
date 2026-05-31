@@ -8,8 +8,22 @@ from torchvision.models import ResNet18_Weights
 from src import config
 
 
+class ConcatPool2d(nn.Module):
+    """
+    Для аудио: конкатенирует Max (ловит резкие звуки, напр. птиц/хруст) 
+    и Avg (ловит фоновые звуки, напр. ветер/дождь) пулинг.
+    """
+    def __init__(self):
+        super().__init__()
+        self.ap = nn.AdaptiveAvgPool2d((1, 1))
+        self.mp = nn.AdaptiveMaxPool2d((1, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.cat([self.ap(x), self.mp(x)], dim=1)
+
+
 class LightCNNClassifier(nn.Module):
-    """Compact CNN for small datasets (~300k params). Harder to overfit than ResNet-18."""
+    """Compact CNN optimized for audio spectrograms."""
 
     def __init__(
         self,
@@ -18,35 +32,45 @@ class LightCNNClassifier(nn.Module):
     ):
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(1, 64, 3, padding=1),
+            # Блок 1
+            nn.Conv2d(1, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(2),
-            nn.Dropout2d(0.15),
-            nn.Conv2d(64, 128, 3, padding=1),
+            
+            # Блок 2
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(2),
-            nn.Dropout2d(0.25),
-            nn.Conv2d(128, 256, 3, padding=1),
+            
+            # Блок 3
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(),
             nn.MaxPool2d(2),
-            nn.Dropout2d(0.25),
         )
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        
+        self.pool = ConcatPool2d()
+        
+        # Увеличиваем in_features в 2 раза из-за ConcatPool2d
         self.classifier = nn.Sequential(
             nn.Flatten(),
+            nn.Linear(256 * 2, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(256, num_classes),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.classifier(self.pool(self.features(x)))
+        x = self.features(x)
+        x = self.pool(x)
+        return self.classifier(x)
 
 
 class ResNet18Classifier(nn.Module):
-    """Optional larger backbone — use only if you accept higher overfitting risk."""
+    """ResNet-18 adapted for audio with 1-channel input and ConcatPooling."""
 
     def __init__(
         self,
@@ -58,12 +82,14 @@ class ResNet18Classifier(nn.Module):
         weights = ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
         backbone = models.resnet18(weights=weights)
 
+        # Адаптация под 1 канал
         if pretrained:
             old_conv = backbone.conv1
             backbone.conv1 = nn.Conv2d(
                 1, 64, kernel_size=7, stride=2, padding=3, bias=False
             )
             with torch.no_grad():
+                # Усреднение весов 3-х каналов в 1 для сохранения претрейна
                 backbone.conv1.weight.copy_(
                     old_conv.weight.mean(dim=1, keepdim=True)
                 )
@@ -72,11 +98,21 @@ class ResNet18Classifier(nn.Module):
                 1, 64, kernel_size=7, stride=2, padding=3, bias=False
             )
 
-        in_features = backbone.fc.in_features
+        # Заменяем стандартный пулинг на аудио-ориентированный
+        backbone.avgpool = ConcatPool2d()
+
+        # In_features * 2 из-за ConcatPool2d
+        in_features = backbone.fc.in_features * 2
+        
         backbone.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(in_features, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(in_features, num_classes),
+            nn.Linear(512, num_classes),
         )
+        
         self.backbone = backbone
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -96,7 +132,7 @@ class ResNet18Classifier(nn.Module):
             param.requires_grad = True
 
 
-# Default export — light model for ESC-50 scale
+# Default export
 CNNClassifier = LightCNNClassifier
 
 
